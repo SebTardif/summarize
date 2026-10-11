@@ -291,8 +291,6 @@ jobs:
     permissions:
       id-token: write
       contents: read
-    env:
-      NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npmrc
     steps:
       - name: Checkout frozen tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -316,6 +314,8 @@ jobs:
           PACK_DIR="$RUNNER_TEMP/npm-pack" scripts/release.sh pack
 
       - name: Smoke, publish core then CLI, and verify provenance
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npmrc
         run: env -u NODE_AUTH_TOKEN -u NPM_TOKEN node scripts/npm-release.mjs publish "$RUNNER_TEMP/npm-pack"
 
   publish:
