@@ -76,6 +76,17 @@ type ExtractSlidesArgs = {
   } | null;
 };
 
+export async function releaseSlideInput(
+  cleanup: (() => Promise<void>) | null | undefined,
+): Promise<void> {
+  if (!cleanup) return;
+  try {
+    await cleanup();
+  } catch {
+    // A temp-file delete must not replace a finished extract or hide the original error.
+  }
+}
+
 export async function extractSlidesForSource({
   source,
   settings,
@@ -403,9 +414,7 @@ export async function extractSlidesForSource({
         logSlidesTiming("slides total", totalStartedAt);
         return result;
       } finally {
-        if (inputCleanup) {
-          await inputCleanup();
-        }
+        await releaseSlideInput(inputCleanup);
       }
     },
     () => {
