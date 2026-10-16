@@ -320,4 +320,72 @@ describe("daemon/schtasks lifecycle", () => {
     expect(existsSync(legacyLauncher)).toBe(false);
     expect(existsSync(legacyPid)).toBe(false);
   });
+
+  it("still removes the task when schtasks /End fails because it is not running", async () => {
+    mocks.execFile.mockImplementation(
+      (
+        _file: string,
+        args: string[],
+        _options: { encoding: string; windowsHide: boolean },
+        callback: (error: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void,
+      ) => {
+        if (args[0] === "/End") {
+          const error = Object.assign(new Error("task is not running"), {
+            code: 1,
+            stdout: "",
+            stderr: "ERROR: The scheduled task is not currently running.",
+          });
+          callback(error, "", error.stderr);
+          return {} as never;
+        }
+        callback(null, "", "");
+        return {} as never;
+      },
+    );
+    setFetchPid(null);
+    const home = mkdtempSync(path.join(tmpdir(), "summarize-schtasks-"));
+    writeDaemonConfig(home);
+    const scriptPath = path.join(home, ".summarize", "daemon.cmd");
+    writeFileSync(scriptPath, "script", "utf8");
+    const out = collectStream();
+
+    await uninstallScheduledTask({ env: { HOME: home }, stdout: out.stream });
+
+    expect(out.getText()).toContain("Removed task script");
+    expect(existsSync(scriptPath)).toBe(false);
+  });
+
+  it("does not report the task removed when schtasks /Delete fails", async () => {
+    mocks.execFile.mockImplementation(
+      (
+        _file: string,
+        args: string[],
+        _options: { encoding: string; windowsHide: boolean },
+        callback: (error: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void,
+      ) => {
+        if (args[0] === "/Delete") {
+          const error = Object.assign(new Error("Access is denied"), {
+            code: 1,
+            stdout: "",
+            stderr: "Access is denied",
+          });
+          callback(error, "", "Access is denied");
+          return {} as never;
+        }
+        callback(null, "", "");
+        return {} as never;
+      },
+    );
+    setFetchPid(null);
+    const home = mkdtempSync(path.join(tmpdir(), "summarize-schtasks-"));
+    writeDaemonConfig(home);
+    const scriptPath = path.join(home, ".summarize", "daemon.cmd");
+    writeFileSync(scriptPath, "script", "utf8");
+    const out = collectStream();
+
+    await expect(
+      uninstallScheduledTask({ env: { HOME: home }, stdout: out.stream }),
+    ).rejects.toThrow(/schtasks delete|Access is denied/);
+    expect(existsSync(scriptPath)).toBe(true);
+  });
 });

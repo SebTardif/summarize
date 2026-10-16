@@ -16,6 +16,7 @@ type ServiceCommand =
   | "schtasks"
   | "schtasks create"
   | "schtasks run"
+  | "schtasks delete"
   | "taskkill";
 
 export function serviceCommandError(

@@ -350,8 +350,12 @@ export async function uninstallScheduledTask({
 }): Promise<void> {
   await assertSchtasksAvailable();
   await killRunningDaemon(env);
+  // /End is nonzero when the task is not running. That is not an uninstall failure.
   await execSchtasks(["/End", "/TN", DAEMON_WINDOWS_TASK_NAME]);
-  await execSchtasks(["/Delete", "/F", "/TN", DAEMON_WINDOWS_TASK_NAME]);
+  const deleted = await execSchtasks(["/Delete", "/F", "/TN", DAEMON_WINDOWS_TASK_NAME]);
+  if (deleted.code !== 0) {
+    throw serviceCommandError("schtasks delete", deleted.stderr || deleted.stdout);
+  }
 
   const scriptPath = resolveTaskScriptPath(env);
   try {
