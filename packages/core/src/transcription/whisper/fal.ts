@@ -6,33 +6,29 @@ export async function transcribeWithFal(
   bytes: Uint8Array,
   mediaType: string,
   apiKey: string,
+  options?: { fetchImpl?: typeof fetch; timeoutMs?: number },
 ): Promise<string | null> {
-  const fal = createFalClient({ credentials: apiKey });
-  const blob = new Blob([toArrayBuffer(bytes)], { type: mediaType });
-  const audioUrl = await fal.storage.upload(blob);
-
+  const fal = createFalClient({ credentials: apiKey, fetchImpl: options?.fetchImpl });
   const controller = new AbortController();
   const timeoutError = new Error("FAL transcription timeout");
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  let result: unknown;
+  const timeout = setTimeout(
+    () => controller.abort(timeoutError),
+    options?.timeoutMs ?? TRANSCRIPTION_TIMEOUT_MS,
+  );
   try {
-    result = await Promise.race([
-      fal.subscribe("fal-ai/wizper", {
-        input: { audio_url: audioUrl, language: "en" },
-        signal: controller.signal,
-      }),
-      new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => {
-          reject(timeoutError);
-          controller.abort(timeoutError);
-        }, TRANSCRIPTION_TIMEOUT_MS);
-      }),
-    ]);
+    const blob = new Blob([toArrayBuffer(bytes)], { type: mediaType });
+    const audioUrl = await fal.storage.upload(blob, controller.signal);
+    const result = await fal.subscribe("fal-ai/wizper", {
+      input: { audio_url: audioUrl, language: "en" },
+      signal: controller.signal,
+    });
+    return extractText(result);
+  } catch (error) {
+    if (controller.signal.aborted) throw timeoutError;
+    throw error;
   } finally {
-    if (timeout !== null) clearTimeout(timeout);
+    clearTimeout(timeout);
   }
-
-  return extractText(result);
 }
 
 function extractText(result: unknown): string | null {

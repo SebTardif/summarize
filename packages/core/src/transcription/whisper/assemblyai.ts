@@ -44,6 +44,24 @@ function requireString(value: unknown, label: string): string {
   throw new Error(`AssemblyAI ${label} missing from response`);
 }
 
+function assemblyTimedOut(timeoutMs: number): Error {
+  return new Error(`transcript polling timed out after ${Math.round(timeoutMs / 1000)}s`);
+}
+
+async function assemblyFetch(
+  fetchImpl: typeof fetch | undefined,
+  url: string,
+  init: RequestInit & { duplex?: "half" },
+  timeoutMs: number,
+): Promise<Response> {
+  try {
+    return await resolveFetch(fetchImpl)(url, init);
+  } catch (error) {
+    if (init.signal?.aborted) throw assemblyTimedOut(timeoutMs);
+    throw error;
+  }
+}
+
 async function uploadViaAssemblyAi(
   body: BodyInit,
   apiKey: string,
@@ -51,14 +69,25 @@ async function uploadViaAssemblyAi(
     fetchImpl,
     baseUrl = ASSEMBLYAI_BASE_URL,
     mediaType,
-  }: Pick<AssemblyAiOptions, "fetchImpl" | "baseUrl" | "mediaType">,
+    signal,
+    timeoutMs = TRANSCRIPTION_TIMEOUT_MS,
+  }: Pick<AssemblyAiOptions, "fetchImpl" | "baseUrl" | "mediaType"> & {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  },
 ): Promise<string> {
-  const res = await resolveFetch(fetchImpl)(`${baseUrl}/upload`, {
-    method: "POST",
-    headers: buildHeaders(apiKey, mediaType ?? "application/octet-stream"),
-    body,
-    duplex: "half",
-  } as RequestInit & { duplex: "half" });
+  const res = await assemblyFetch(
+    fetchImpl,
+    `${baseUrl}/upload`,
+    {
+      method: "POST",
+      headers: buildHeaders(apiKey, mediaType ?? "application/octet-stream"),
+      body,
+      duplex: "half",
+      signal,
+    },
+    timeoutMs,
+  );
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`upload failed (${res.status}): ${text.trim() || res.statusText}`);
@@ -70,18 +99,32 @@ async function uploadViaAssemblyAi(
 async function submitAssemblyAiTranscript(
   audioUrl: string,
   apiKey: string,
-  { fetchImpl, baseUrl = ASSEMBLYAI_BASE_URL }: Pick<AssemblyAiOptions, "fetchImpl" | "baseUrl">,
+  {
+    fetchImpl,
+    baseUrl = ASSEMBLYAI_BASE_URL,
+    signal,
+    timeoutMs = TRANSCRIPTION_TIMEOUT_MS,
+  }: Pick<AssemblyAiOptions, "fetchImpl" | "baseUrl"> & {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  },
 ): Promise<{ id: string; status: string; text: string | null }> {
-  const res = await resolveFetch(fetchImpl)(`${baseUrl}/transcript`, {
-    method: "POST",
-    headers: buildHeaders(apiKey, "application/json"),
-    body: JSON.stringify({
-      audio_url: audioUrl,
-      speech_models: [...ASSEMBLYAI_DEFAULT_MODELS],
-      punctuate: true,
-      format_text: true,
-    }),
-  });
+  const res = await assemblyFetch(
+    fetchImpl,
+    `${baseUrl}/transcript`,
+    {
+      method: "POST",
+      headers: buildHeaders(apiKey, "application/json"),
+      body: JSON.stringify({
+        audio_url: audioUrl,
+        speech_models: [...ASSEMBLYAI_DEFAULT_MODELS],
+        punctuate: true,
+        format_text: true,
+      }),
+      signal,
+    },
+    timeoutMs,
+  );
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`transcript create failed (${res.status}): ${text.trim() || res.statusText}`);
@@ -102,17 +145,26 @@ async function pollAssemblyAiTranscript(
     baseUrl = ASSEMBLYAI_BASE_URL,
     pollIntervalMs = ASSEMBLYAI_POLL_INTERVAL_MS,
     timeoutMs = TRANSCRIPTION_TIMEOUT_MS,
-  }: Pick<AssemblyAiOptions, "fetchImpl" | "baseUrl" | "pollIntervalMs" | "timeoutMs">,
+    signal,
+  }: Pick<AssemblyAiOptions, "fetchImpl" | "baseUrl" | "pollIntervalMs" | "timeoutMs"> & {
+    signal?: AbortSignal;
+  },
 ): Promise<string | null> {
   const startedAt = Date.now();
   for (;;) {
-    if (Date.now() - startedAt > timeoutMs) {
-      throw new Error(`transcript polling timed out after ${Math.round(timeoutMs / 1000)}s`);
+    if (signal?.aborted || Date.now() - startedAt > timeoutMs) {
+      throw assemblyTimedOut(timeoutMs);
     }
-    const res = await resolveFetch(fetchImpl)(`${baseUrl}/transcript/${encodeURIComponent(id)}`, {
-      method: "GET",
-      headers: buildHeaders(apiKey),
-    });
+    const res = await assemblyFetch(
+      fetchImpl,
+      `${baseUrl}/transcript/${encodeURIComponent(id)}`,
+      {
+        method: "GET",
+        headers: buildHeaders(apiKey),
+        signal,
+      },
+      timeoutMs,
+    );
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(`transcript poll failed (${res.status}): ${text.trim() || res.statusText}`);
@@ -129,7 +181,12 @@ async function pollAssemblyAiTranscript(
           : "AssemblyAI transcription failed";
       throw new Error(message);
     }
-    await delay(pollIntervalMs);
+    try {
+      await delay(pollIntervalMs, undefined, { signal });
+    } catch (error) {
+      if (signal?.aborted) throw assemblyTimedOut(timeoutMs);
+      throw error;
+    }
   }
 }
 
@@ -141,20 +198,25 @@ async function transcribeUploadedAudioWithAssemblyAi(
     baseUrl,
     mediaType,
     pollIntervalMs,
-    timeoutMs,
+    timeoutMs = TRANSCRIPTION_TIMEOUT_MS,
   }: Pick<
     AssemblyAiOptions,
     "fetchImpl" | "baseUrl" | "mediaType" | "pollIntervalMs" | "timeoutMs"
   >,
 ): Promise<string | null> {
+  const signal = AbortSignal.timeout(timeoutMs);
   const uploadUrl = await uploadViaAssemblyAi(body, apiKey, {
     fetchImpl,
     baseUrl,
     mediaType,
+    signal,
+    timeoutMs,
   });
   const started = await submitAssemblyAiTranscript(uploadUrl, apiKey, {
     fetchImpl,
     baseUrl,
+    signal,
+    timeoutMs,
   });
   if (started.status.trim().toLowerCase() === "completed") return started.text;
   return await pollAssemblyAiTranscript(started.id, apiKey, {
@@ -162,6 +224,7 @@ async function transcribeUploadedAudioWithAssemblyAi(
     baseUrl,
     pollIntervalMs,
     timeoutMs,
+    signal,
   });
 }
 
