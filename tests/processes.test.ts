@@ -5,6 +5,7 @@ import {
   execFileTracked,
   runWithProcessContext,
   setProcessObserver,
+  signalTrackedProcess,
   spawnTracked,
   terminateTrackedProcesses,
 } from "../packages/core/src/processes.js";
@@ -194,4 +195,37 @@ describe("process tracking", () => {
     }
     expect(childAlive).toBe(false);
   });
+
+  it.runIf(process.platform !== "win32")(
+    "signals one tracked process group without leaving the grandchild",
+    async () => {
+      const parentScript = [
+        'const { spawn } = require("node:child_process");',
+        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+        "process.stdout.write(String(child.pid));",
+        "setInterval(() => {}, 1000);",
+      ].join("\n");
+      const { proc } = spawnTracked(process.execPath, ["-e", parentScript], {
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      const [chunk] = await once(proc.stdout!, "data");
+      const childPid = Number(String(chunk));
+      const closed = once(proc, "close");
+
+      signalTrackedProcess(proc, "SIGKILL");
+      await closed;
+
+      let childAlive = true;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        try {
+          process.kill(childPid, 0);
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        } catch {
+          childAlive = false;
+          break;
+        }
+      }
+      expect(childAlive).toBe(false);
+    },
+  );
 });
