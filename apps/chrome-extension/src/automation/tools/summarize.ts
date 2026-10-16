@@ -14,6 +14,8 @@ import { parseSseEvent } from "../../lib/runtime-contracts";
 import { getProviderSettings, loadSettings } from "../../lib/settings";
 import { getActiveTabUrl } from "./active-tab";
 
+const BROWSER_SUMMARIZE_FETCH_TIMEOUT_MS = 120_000;
+
 export type SummarizeToolArgs = {
   url?: string;
   extractOnly?: boolean;
@@ -71,6 +73,7 @@ export async function executeSummarizeTool(args: SummarizeToolArgs): Promise<Sum
         typeof args.maxCharacters === "number" && Number.isFinite(args.maxCharacters)
           ? args.maxCharacters
           : settings.maxChars,
+      signal: AbortSignal.timeout(BROWSER_SUMMARIZE_FETCH_TIMEOUT_MS),
     });
     if (extractOnly) {
       return {
